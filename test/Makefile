@@ -11,17 +11,17 @@ PROJECT_SOURCES =
 	tt_um_uart.v \
     baud_generator.v\
 
-	TX/uart_tx.v \
-	TX/tx_fsm.v \
-	TX/tx_register.v \
-	TX/tx_bit_counter.v \
+	Tx/uart_tx.v \
+	Tx/tx_fsm.v \
+	Tx/tx_register.v \
+	Tx/bit_counter.v \
 
-	RX/uart_rx.v \
-	RX/rx_fsm.v \
-	RX/synchronizer.v \
-	RX/sipo_register.v \
-	RX/output_register.v \
-	RX/rx_bit_counter.v
+	Rx/uart_rx.v \
+	Rx/rx_fsm.v \
+	Rx/synchronizer.v \
+	Rx/sipo_register.v \
+	Rx/output_register.v \
+	Rx/bit_counter.v
 
 ifneq ($(GATES),yes)
 
