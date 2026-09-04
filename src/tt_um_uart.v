@@ -5,7 +5,7 @@
 
 `default_nettype none
 
-module tt_um_TT16 (
+module tt_um_uart (
     input  wire [7:0] ui_in,     // Dedicated inputs
     output wire [7:0] uo_out,    // Dedicated outputs
 
