@@ -14,14 +14,14 @@ PROJECT_SOURCES =
 	TX/uart_tx.v \
 	TX/tx_fsm.v \
 	TX/tx_register.v \
-	TX/tx_baud_counter.v \
+	TX/tx_bit_counter.v \
 
-	RX/rx_top.v \
+	RX/uart_rx.v \
 	RX/rx_fsm.v \
 	RX/synchronizer.v \
 	RX/sipo_register.v \
 	RX/output_register.v \
-	RX/rx_baud_counter.v
+	RX/rx_bit_counter.v
 
 ifneq ($(GATES),yes)
 
