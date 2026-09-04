@@ -3,38 +3,384 @@
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles
+from cocotb.triggers import ClockCycles, Timer
 
 
-@cocotb.test()
-async def test_project(dut):
-    dut._log.info("Start")
+# ============================================================
+# UART PARAMETERS
+# ============================================================
 
-    # Set the clock period to 10 us (100 KHz)
-    clock = Clock(dut.clk, 10, unit="us")
-    cocotb.start_soon(clock.start())
+CLK_FREQ = 200_000_000
+BAUD_RATE = 9600
 
-    # Reset
-    dut._log.info("Reset")
+BIT_TIME_NS = 1_000_000_000 / BAUD_RATE
+
+
+# ============================================================
+# PIN MAPPING
+# ============================================================
+
+# ui_in
+TX_DATA_MASK = 0xFF
+
+# uio_in
+RX_PIN = 0
+TX_START_PIN = 1
+
+# uio_out
+TX_PIN = 2
+TX_BUSY_PIN = 3
+TX_DONE_PIN = 4
+RX_DONE_PIN = 5
+FRAMING_ERROR_PIN = 6
+
+
+# ============================================================
+# RESET
+# ============================================================
+
+async def reset_dut(dut):
+
+    dut._log.info("Resetting DUT")
+
     dut.ena.value = 1
     dut.ui_in.value = 0
     dut.uio_in.value = 0
+
+    # UART RX idle = 1
+    dut.uio_in.value = 1 << RX_PIN
+
     dut.rst_n.value = 0
+
     await ClockCycles(dut.clk, 10)
+
     dut.rst_n.value = 1
 
-    dut._log.info("Test project behavior")
+    # Keep RX idle HIGH
+    dut.uio_in.value = 1 << RX_PIN
 
-    # Set the input values you want to test
-    dut.ui_in.value = 20
-    dut.uio_in.value = 30
+    await ClockCycles(dut.clk, 10)
 
-    # Wait for one clock cycle to see the output values
+    dut._log.info("Reset complete")
+
+
+# ============================================================
+# HELPER: SET TX START
+# ============================================================
+
+async def start_tx(dut, data):
+
+    dut._log.info(f"Starting TX with data = 0x{data:02X}")
+
+    # Put data on ui_in
+    dut.ui_in.value = data
+
+    # RX must remain idle HIGH
+    # TX_START = 1
+    dut.uio_in.value = (1 << RX_PIN) | (1 << TX_START_PIN)
+
     await ClockCycles(dut.clk, 1)
 
-    # The following assersion is just an example of how to check the output values.
-    # Change it to match the actual expected output of your module:
-    assert dut.uo_out.value == 50
+    # TX_START back to 0
+    dut.uio_in.value = (1 << RX_PIN)
 
-    # Keep testing the module by changing the input values, waiting for
-    # one or more clock cycles, and asserting the expected output values.
+    dut._log.info("TX start pulse sent")
+
+
+# ============================================================
+# TEST 1: TX
+# ============================================================
+
+@cocotb.test()
+async def test_uart_tx(dut):
+
+    dut._log.info("================================")
+    dut._log.info("UART TX TEST")
+    dut._log.info("================================")
+
+    # 200 MHz clock = 5 ns
+    clock = Clock(dut.clk, 5, unit="ns")
+    cocotb.start_soon(clock.start())
+
+    await reset_dut(dut)
+
+    test_data = 0xA5
+
+    await start_tx(dut, test_data)
+
+    # --------------------------------------------------------
+    # Wait for TX to become busy
+    # --------------------------------------------------------
+
+    for _ in range(20):
+        if int(dut.uio_out.value) & (1 << TX_BUSY_PIN):
+            break
+        await ClockCycles(dut.clk, 1)
+
+    tx_busy = (int(dut.uio_out.value) >> TX_BUSY_PIN) & 1
+
+    assert tx_busy == 1, "TX did not become busy"
+
+    dut._log.info("TX became busy")
+
+    # --------------------------------------------------------
+    # UART frame
+    #
+    # START = 0
+    # DATA  = D0 D1 ... D7
+    # STOP  = 1
+    # --------------------------------------------------------
+
+    expected_bits = []
+
+    # Start bit
+    expected_bits.append(0)
+
+    # 8 data bits, LSB first
+    for i in range(8):
+        expected_bits.append((test_data >> i) & 1)
+
+    # Stop bit
+    expected_bits.append(1)
+
+    dut._log.info(
+        f"Expected UART frame: {expected_bits}"
+    )
+
+    # --------------------------------------------------------
+    # Sample approximately in the middle of every bit
+    # --------------------------------------------------------
+
+    for bit_number, expected in enumerate(expected_bits):
+
+        await Timer(BIT_TIME_NS / 2, unit="ns")
+
+        tx_value = (
+            int(dut.uio_out.value) >> TX_PIN
+        ) & 1
+
+        dut._log.info(
+            f"TX bit {bit_number}: "
+            f"expected={expected}, actual={tx_value}"
+        )
+
+        assert tx_value == expected, (
+            f"TX bit {bit_number} incorrect: "
+            f"expected {expected}, got {tx_value}"
+        )
+
+        await Timer(BIT_TIME_NS / 2, unit="ns")
+
+    # --------------------------------------------------------
+    # Wait for TX done
+    # --------------------------------------------------------
+
+    for _ in range(10):
+        tx_done = (
+            int(dut.uio_out.value) >> TX_DONE_PIN
+        ) & 1
+
+        if tx_done:
+            break
+
+        await ClockCycles(dut.clk, 1)
+
+    assert tx_done == 1, "TX done was not asserted"
+
+    dut._log.info("TX test PASSED")
+
+
+# ============================================================
+# HELPER: SEND UART BYTE INTO RX
+# ============================================================
+
+async def send_uart_byte(dut, data):
+
+    dut._log.info(
+        f"Sending UART RX byte = 0x{data:02X}"
+    )
+
+    # --------------------------------------------------------
+    # START BIT
+    # --------------------------------------------------------
+
+    dut.uio_in.value = 0
+
+    await Timer(BIT_TIME_NS, unit="ns")
+
+    # --------------------------------------------------------
+    # DATA BITS - LSB FIRST
+    # --------------------------------------------------------
+
+    for i in range(8):
+
+        bit = (data >> i) & 1
+
+        # RX is uio_in[0]
+        dut.uio_in.value = bit
+
+        dut._log.info(
+            f"RX sending D{i} = {bit}"
+        )
+
+        await Timer(BIT_TIME_NS, unit="ns")
+
+    # --------------------------------------------------------
+    # STOP BIT
+    # --------------------------------------------------------
+
+    dut.uio_in.value = 1
+
+    await Timer(BIT_TIME_NS, unit="ns")
+
+    # Return to UART idle
+    dut.uio_in.value = 1
+
+
+# ============================================================
+# TEST 2: RX
+# ============================================================
+
+@cocotb.test()
+async def test_uart_rx(dut):
+
+    dut._log.info("================================")
+    dut._log.info("UART RX TEST")
+    dut._log.info("================================")
+
+    # 200 MHz clock = 5 ns
+    clock = Clock(dut.clk, 5, unit="ns")
+    cocotb.start_soon(clock.start())
+
+    await reset_dut(dut)
+
+    test_data = 0xA5
+
+    # --------------------------------------------------------
+    # Send UART frame
+    # --------------------------------------------------------
+
+    await send_uart_byte(dut, test_data)
+
+    # --------------------------------------------------------
+    # Wait for RX done
+    # --------------------------------------------------------
+
+    rx_done = 0
+
+    for _ in range(50000):
+
+        rx_done = (
+            int(dut.uio_out.value) >> RX_DONE_PIN
+        ) & 1
+
+        if rx_done:
+            break
+
+        await ClockCycles(dut.clk, 1)
+
+    assert rx_done == 1, "RX done was not asserted"
+
+    dut._log.info("RX done detected")
+
+    # --------------------------------------------------------
+    # Read received data
+    # --------------------------------------------------------
+
+    received_data = int(dut.uo_out.value) & 0xFF
+
+    dut._log.info(
+        f"RX expected = 0x{test_data:02X}"
+    )
+
+    dut._log.info(
+        f"RX received = 0x{received_data:02X}"
+    )
+
+    assert received_data == test_data, (
+        f"RX data incorrect: "
+        f"expected 0x{test_data:02X}, "
+        f"got 0x{received_data:02X}"
+    )
+
+    # --------------------------------------------------------
+    # Check framing error
+    # --------------------------------------------------------
+
+    framing_error = (
+        int(dut.uio_out.value) >> FRAMING_ERROR_PIN
+    ) & 1
+
+    assert framing_error == 0, (
+        "Unexpected framing error"
+    )
+
+    dut._log.info("RX test PASSED")
+
+
+# ============================================================
+# TEST 3: RX MULTIPLE BYTES
+# ============================================================
+
+@cocotb.test()
+async def test_uart_rx_multiple_bytes(dut):
+
+    dut._log.info("================================")
+    dut._log.info("UART MULTIPLE RX TEST")
+    dut._log.info("================================")
+
+    clock = Clock(dut.clk, 5, unit="ns")
+    cocotb.start_soon(clock.start())
+
+    await reset_dut(dut)
+
+    test_values = [
+        0x00,
+        0x55,
+        0xAA,
+        0xA5,
+        0xFF,
+        0x42
+    ]
+
+    for test_data in test_values:
+
+        dut._log.info(
+            f"Testing RX value 0x{test_data:02X}"
+        )
+
+        await send_uart_byte(dut, test_data)
+
+        # Wait for RX done
+        rx_done = 0
+
+        for _ in range(50000):
+
+            rx_done = (
+                int(dut.uio_out.value) >> RX_DONE_PIN
+            ) & 1
+
+            if rx_done:
+                break
+
+            await ClockCycles(dut.clk, 1)
+
+        assert rx_done == 1, (
+            f"RX done not detected for "
+            f"0x{test_data:02X}"
+        )
+
+        received_data = int(dut.uo_out.value) & 0xFF
+
+        assert received_data == test_data, (
+            f"RX mismatch: "
+            f"expected 0x{test_data:02X}, "
+            f"got 0x{received_data:02X}"
+        )
+
+        # Allow RX to return to IDLE
+        await ClockCycles(dut.clk, 10)
+
+    dut._log.info(
+        "Multiple RX test PASSED"
+    )
