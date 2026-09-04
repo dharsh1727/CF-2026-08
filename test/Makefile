@@ -9,17 +9,18 @@ SRC_DIR = $(PWD)/../src
 
 PROJECT_SOURCES = 
 	tt_um_uart.v \
+    baud_generator\
+
 	TX/uart_tx.v \
 	TX/tx_fsm.v \
 	TX/tx_register.v \
 	TX/tx_baud_counter.v \
-  TX/baud_generator.v\
+
 	RX/rx_top.v \
 	RX/rx_fsm.v \
 	RX/synchronizer.v \
 	RX/sipo_register.v \
 	RX/output_register.v \
-  RX/baud_generator.v\
 	RX/rx_baud_counter.v
 
 ifneq ($(GATES),yes)
