@@ -14,13 +14,14 @@ project:
   top_module: "tt_um_uart"
 
   source_files:
-    - "TOP/tt_um_uart.v"
+    - "tt_um_uart.v"
+    - "baud_generator.v"
 
     - "TX/uart_tx.v"
     - "TX/tx_fsm.v"
     - "TX/tx_register.v"
     - "TX/bit_counter.v"
-    - "TX/baud_generator.v"
+
     
     - "RX/uart_rx.v"
     - "RX/rx_fsm.v"
@@ -28,7 +29,7 @@ project:
     - "RX/synchronizer.v"
     - "RX/output_register.v"
     - "RX/bit_counter.v"
-    - "RX/baud_generator.v"
+
 
 pinout:
   # Inputs
