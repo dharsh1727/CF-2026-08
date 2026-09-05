@@ -14,7 +14,6 @@ PROJECT_SOURCES =
 	Tx/uart_tx.v \
 	Tx/tx_fsm.v \
 	Tx/tx_register.v \
-	Tx/bit_counter.v \
 
 	Rx/uart_rx.v \
 	Rx/rx_fsm.v \
