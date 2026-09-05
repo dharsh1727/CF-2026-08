@@ -10,11 +10,9 @@ SRC_DIR = $(PWD)/../src
 PROJECT_SOURCES = \
 	tt_um_uart.v \
     baud_generator.v\
-
 	Tx/uart_tx.v \
 	Tx/tx_fsm.v \
 	Tx/tx_register.v \
-
 	Rx/uart_rx.v \
 	Rx/rx_fsm.v \
 	Rx/synchronizer.v \
