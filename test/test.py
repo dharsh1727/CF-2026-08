@@ -3,7 +3,8 @@
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles, Timer
+from cocotb.triggers import ClockCycles, Timer, RisingEdge, Event, with_timeout
+from cocotb.result import SimTimeoutError
 
 
 # ============================================================
@@ -54,9 +55,8 @@ async def reset_dut(dut):
 
     dut.ena.value = 1
     dut.ui_in.value = 0
-    dut.uio_in.value = 0
 
-    # UART RX idle = 1
+    # RX idle = 1
     dut.uio_in.value = 1 << RX_PIN
 
     dut.rst_n.value = 0
@@ -100,6 +100,46 @@ async def start_tx(dut, data):
 
 
 # ============================================================
+# HELPER: WAIT FOR TX DONE
+# ============================================================
+
+async def wait_for_tx_done(dut, done_event):
+
+    while True:
+
+        await RisingEdge(dut.clk)
+
+        tx_done = (
+            (int(dut.uio_out.value) >> TX_DONE_PIN) & 1
+        )
+
+        if tx_done:
+            dut._log.info("TX_DONE pulse detected")
+            done_event.set()
+            return
+
+
+# ============================================================
+# HELPER: WAIT FOR RX DONE
+# ============================================================
+
+async def wait_for_rx_done(dut, done_event):
+
+    while True:
+
+        await RisingEdge(dut.clk)
+
+        rx_done = (
+            (int(dut.uio_out.value) >> RX_DONE_PIN) & 1
+        )
+
+        if rx_done:
+            dut._log.info("RX_DONE pulse detected")
+            done_event.set()
+            return
+
+
+# ============================================================
 # TEST 1: TX
 # ============================================================
 
@@ -110,7 +150,7 @@ async def test_uart_tx(dut):
     dut._log.info("UART TX TEST")
     dut._log.info("================================")
 
-    # 200 MHz clock = 5 ns
+    # Start 200 MHz clock
     clock = Clock(dut.clk, CLK_PERIOD_NS, unit="ns")
     cocotb.start_soon(clock.start())
 
@@ -118,6 +158,17 @@ async def test_uart_tx(dut):
 
     test_data = 0xA5
 
+    # --------------------------------------------------------
+    # Start monitoring TX_DONE BEFORE starting transmission
+    # --------------------------------------------------------
+
+    tx_done_event = Event()
+
+    cocotb.start_soon(
+        wait_for_tx_done(dut, tx_done_event)
+    )
+
+    # Start TX
     await start_tx(dut, test_data)
 
     # --------------------------------------------------------
@@ -126,14 +177,16 @@ async def test_uart_tx(dut):
 
     for _ in range(20):
 
-        if int(dut.uio_out.value) & (1 << TX_BUSY_PIN):
+        if (
+            (int(dut.uio_out.value) >> TX_BUSY_PIN) & 1
+        ):
             break
 
         await ClockCycles(dut.clk, 1)
 
     tx_busy = (
-        int(dut.uio_out.value) >> TX_BUSY_PIN
-    ) & 1
+        (int(dut.uio_out.value) >> TX_BUSY_PIN) & 1
+    )
 
     assert tx_busy == 1, "TX did not become busy"
 
@@ -177,8 +230,8 @@ async def test_uart_tx(dut):
         )
 
         tx_value = (
-            int(dut.uio_out.value) >> TX_PIN
-        ) & 1
+            (int(dut.uio_out.value) >> TX_PIN) & 1
+        )
 
         dut._log.info(
             f"TX bit {bit_number}: "
@@ -198,23 +251,22 @@ async def test_uart_tx(dut):
         )
 
     # --------------------------------------------------------
-    # Wait for TX done
+    # Wait for TX_DONE
     # --------------------------------------------------------
 
-    tx_done = 0
+    try:
 
-    for _ in range(10):
+        await with_timeout(
+            tx_done_event.wait(),
+            20,
+            "us"
+        )
 
-        tx_done = (
-            int(dut.uio_out.value) >> TX_DONE_PIN
-        ) & 1
+    except SimTimeoutError:
 
-        if tx_done:
-            break
+        assert False, "TX done was not asserted"
 
-        await ClockCycles(dut.clk, 1)
-
-    assert tx_done == 1, "TX done was not asserted"
+    dut._log.info("TX done detected")
 
     dut._log.info("TX test PASSED")
 
@@ -286,7 +338,7 @@ async def test_uart_rx(dut):
     dut._log.info("UART RX TEST")
     dut._log.info("================================")
 
-    # 200 MHz clock = 5 ns
+    # Start 200 MHz clock
     clock = Clock(dut.clk, CLK_PERIOD_NS, unit="ns")
     cocotb.start_soon(clock.start())
 
@@ -295,29 +347,36 @@ async def test_uart_rx(dut):
     test_data = 0xA5
 
     # --------------------------------------------------------
+    # Start monitoring RX_DONE BEFORE sending the frame
+    # --------------------------------------------------------
+
+    rx_done_event = Event()
+
+    cocotb.start_soon(
+        wait_for_rx_done(dut, rx_done_event)
+    )
+
+    # --------------------------------------------------------
     # Send UART frame
     # --------------------------------------------------------
 
     await send_uart_byte(dut, test_data)
 
     # --------------------------------------------------------
-    # Wait for RX done
+    # Wait for RX_DONE
     # --------------------------------------------------------
 
-    rx_done = 0
+    try:
 
-    for _ in range(50000):
+        await with_timeout(
+            rx_done_event.wait(),
+            20,
+            "us"
+        )
 
-        rx_done = (
-            int(dut.uio_out.value) >> RX_DONE_PIN
-        ) & 1
+    except SimTimeoutError:
 
-        if rx_done:
-            break
-
-        await ClockCycles(dut.clk, 1)
-
-    assert rx_done == 1, "RX done was not asserted"
+        assert False, "RX done was not asserted"
 
     dut._log.info("RX done detected")
 
@@ -348,8 +407,8 @@ async def test_uart_rx(dut):
     # --------------------------------------------------------
 
     framing_error = (
-        int(dut.uio_out.value) >> FRAMING_ERROR_PIN
-    ) & 1
+        (int(dut.uio_out.value) >> FRAMING_ERROR_PIN) & 1
+    )
 
     assert framing_error == 0, (
         "Unexpected framing error"
@@ -369,6 +428,7 @@ async def test_uart_rx_multiple_bytes(dut):
     dut._log.info("UART MULTIPLE RX TEST")
     dut._log.info("================================")
 
+    # Start 200 MHz clock
     clock = Clock(dut.clk, CLK_PERIOD_NS, unit="ns")
     cocotb.start_soon(clock.start())
 
@@ -383,34 +443,53 @@ async def test_uart_rx_multiple_bytes(dut):
         0x42
     ]
 
+    # --------------------------------------------------------
+    # Test each byte
+    # --------------------------------------------------------
+
     for test_data in test_values:
 
         dut._log.info(
             f"Testing RX value 0x{test_data:02X}"
         )
 
+        # ----------------------------------------------------
+        # Create a NEW RX_DONE monitor for this byte
+        # ----------------------------------------------------
+
+        rx_done_event = Event()
+
+        cocotb.start_soon(
+            wait_for_rx_done(dut, rx_done_event)
+        )
+
+        # ----------------------------------------------------
+        # Send UART byte
+        # ----------------------------------------------------
+
         await send_uart_byte(dut, test_data)
 
         # ----------------------------------------------------
-        # Wait for RX done
+        # Wait for RX_DONE
         # ----------------------------------------------------
 
-        rx_done = 0
+        try:
 
-        for _ in range(50000):
+            await with_timeout(
+                rx_done_event.wait(),
+                20,
+                "us"
+            )
 
-            rx_done = (
-                int(dut.uio_out.value) >> RX_DONE_PIN
-            ) & 1
+        except SimTimeoutError:
 
-            if rx_done:
-                break
+            assert False, (
+                f"RX done not detected for "
+                f"0x{test_data:02X}"
+            )
 
-            await ClockCycles(dut.clk, 1)
-
-        assert rx_done == 1, (
-            f"RX done not detected for "
-            f"0x{test_data:02X}"
+        dut._log.info(
+            f"RX done detected for 0x{test_data:02X}"
         )
 
         # ----------------------------------------------------
@@ -421,13 +500,37 @@ async def test_uart_rx_multiple_bytes(dut):
             int(dut.uo_out.value) & TX_DATA_MASK
         )
 
+        dut._log.info(
+            f"RX expected = 0x{test_data:02X}"
+        )
+
+        dut._log.info(
+            f"RX received = 0x{received_data:02X}"
+        )
+
         assert received_data == test_data, (
             f"RX mismatch: "
             f"expected 0x{test_data:02X}, "
             f"got 0x{received_data:02X}"
         )
 
+        # ----------------------------------------------------
+        # Check framing error
+        # ----------------------------------------------------
+
+        framing_error = (
+            (int(dut.uio_out.value) >> FRAMING_ERROR_PIN) & 1
+        )
+
+        assert framing_error == 0, (
+            f"Unexpected framing error for "
+            f"0x{test_data:02X}"
+        )
+
+        # ----------------------------------------------------
         # Allow RX to return to IDLE
+        # ----------------------------------------------------
+
         await ClockCycles(dut.clk, 10)
 
     dut._log.info(
