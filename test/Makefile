@@ -7,7 +7,7 @@ TOPLEVEL_LANG ?= verilog
 
 SRC_DIR = $(PWD)/../src
 
-PROJECT_SOURCES = 
+PROJECT_SOURCES = \
 	tt_um_uart.v \
     baud_generator.v\
 
